@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stickman Strike: Flash Kick Edition</title>
+<style>
+  body { margin: 0; background: #0a0a0c; overflow: hidden; font-family: 'Segoe UI', sans-serif; color: white; }
+  canvas { background: #000; display: block; margin: auto; margin-top: 20px; border: 5px solid #333; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+  .ui-container { width: 800px; margin: auto; display: flex; justify-content: space-between; padding: 10px; }
+  .round-display { font-size: 28px; font-weight: bold; color: #00ffcc; text-align: center; }
+  .instructions { text-align: center; color: #666; font-size: 12px; margin-top: 5px; }
+</style>
+</head>
+<body>
+
+<div class="ui-container">
+    <div id="p1-wins" style="color: #3af;">Wins: 0</div>
+    <div class="round-display" id="round-text">ROUND 1</div>
+    <div id="p2-wins" style="color: #f33;">Wins: 0</div>
+</div>
+<canvas id="game" width="800" height="350"></canvas>
+<div class="instructions">
+    P1: WASD, F (Punch), Q (Sonic Boom), E (FLASH KICK SUPER) | P2: Arrows, Enter, Shift, /
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const gravity = 0.5;
+
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playSound(freq, type, duration, vol=0.1) {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+}
+
+const sounds = {
+    hit: () => playSound(150, 'square', 0.1),
+    fireball: () => playSound(400, 'sawtooth', 0.2),
+    super: () => { 
+        playSound(200, 'sawtooth', 0.8);
+        setTimeout(() => playSound(600, 'sawtooth', 0.4), 100);
+    },
+    jump: () => playSound(300, 'sine', 0.1, 0.05)
+};
+
+class Projectile {
+  constructor(x, y, dir, color, isSuper = false) {
+    this.x = x; this.y = y;
+    this.speed = (isSuper ? 12 : 8) * dir;
+    this.width = isSuper ? 20 : 30;
+    this.height = isSuper ? 120 : 15;
+    this.color = color;
+    this.active = true;
+    this.isSuper = isSuper;
+    this.rotation = 0;
+  }
+  update() { 
+    this.x += this.speed; 
+    if(this.isSuper) this.rotation += 0.5;
+    if(this.x < -200 || this.x > canvas.width + 200) this.active = false; 
+  }
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.fillStyle = this.color;
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = this.color;
+    if(this.isSuper) {
+        // Crescent Moon Shape
+        ctx.beginPath();
+        ctx.arc(0, 0, 60, -Math.PI/2, Math.PI/2);
+        ctx.lineTo(-10, 0);
+        ctx.fill();
+    } else {
+        ctx.fillRect(0, 0, this.width, this.height);
+    }
+    ctx.restore();
+    ctx.shadowBlur = 0;
+  }
+}
+
+class Fighter {
+  constructor(x, color, headbandColor, controls) {
+    this.startX = x;
+    this.reset();
+    this.color = color;
+    this.headbandColor = headbandColor;
+    this.controls = controls;
+    this.animTimer = 0;
+  }
+
+  reset() {
+    this.x = this.startX; this.y = 250; this.yVel = 0;
+    this.health = 100; this.meter = 0;
+    this.onGround = true; this.facing = this.x < 400 ? 1 : -1;
+    this.state = "IDLE"; // IDLE, MOVE, PUNCH, SUPER, JUMP
+    this.projectiles = [];
+    this.stateTimer = 0;
+  }
+
+  setState(newState, duration = 0) {
+    if (this.state === "SUPER" && newState !== "IDLE") return;
+    this.state = newState;
+    this.stateTimer = duration;
+  }
+
+  move(keys) {
+    if (gameState !== "PLAYING" || this.state === "SUPER") return;
+
+    this.animTimer += 0.15;
+    let isMoving = false;
+
+    if (keys[this.controls.left]) { this.x -= 4; this.facing = -1; isMoving = true; }
+    if (keys[this.controls.right]) { this.x += 4; this.facing = 1; isMoving = true; }
+    
+    if (this.onGround) {
+        if (keys[this.controls.jump]) {
+            this.yVel = -13; this.onGround = false; sounds.jump();
+            this.setState("JUMP");
+        } else if (keys[this.controls.super] && this.meter >= 100) {
+            this.performSuper();
+        } else if (keys[this.controls.attack] && this.state !== "PUNCH") {
+            this.setState("PUNCH", 15);
+        } else if (keys[this.controls.fireball] && this.state !== "PUNCH") {
+            this.fireball();
+        } else {
+            this.setState(isMoving ? "MOVE" : "IDLE");
+        }
+    }
+
+    if (keys[this.controls.down] && this.onGround) this.state = "BLOCK";
+  }
+
+  fireball() {
+    this.setState("PUNCH", 20);
+    sounds.fireball();
+    setTimeout(() => {
+        this.projectiles.push(new Projectile(this.x + (this.facing * 40), this.y + 20, this.facing, "#00ffff"));
+    }, 100);
+  }
+
+  performSuper() {
+    this.meter = 0;
+    this.setState("SUPER", 50);
+    sounds.super();
+    this.yVel = -15;
+    this.onGround = false;
+    // The "Sonic Hurricane" projectile
+    setTimeout(() => {
+        this.projectiles.push(new Projectile(this.x, this.y, this.facing, "#fff", true));
+    }, 200);
+  }
+
+  update() {
+    this.y += this.yVel;
+    if (!this.onGround) this.yVel += gravity;
+    if (this.y >= 250) { 
+        this.y = 250; 
+        this.onGround = true; 
+        if(this.state === "JUMP" || this.state === "SUPER") this.state = "IDLE";
+    }
+    this.x = Math.max(0, Math.min(this.x, canvas.width - 40));
+    if (this.stateTimer > 0) this.stateTimer--;
+    else if (this.state === "PUNCH" || this.state === "BLOCK") this.state = "IDLE";
+
+    this.projectiles.forEach(p => p.update());
+    this.projectiles = this.projectiles.filter(p => p.active);
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x + 20, this.y + 40);
+    if (this.state === "SUPER") ctx.rotate(this.stateTimer * 0.4 * this.facing);
+
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "white";
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = this.color;
+
+    const breathe = Math.sin(this.animTimer) * 2;
+    const walkIdx = Math.sin(this.animTimer * 2);
+
+    // Head
+    ctx.beginPath();
+    ctx.arc(0, -30 + (this.state === "IDLE" ? breathe : 0), 10, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Body
+    ctx.beginPath();
+    ctx.moveTo(0, -20);
+    ctx.lineTo(0, 10);
+    ctx.stroke();
+
+    // Arms & Legs logic for "Smoothness"
+    if (this.state === "PUNCH") {
+        this.line(0, -10, 30 * this.facing, -10); // Punching arm
+        this.line(0, -10, -10 * this.facing, 5);  // Idle arm
+    } else if (this.state === "SUPER") {
+        this.line(0, -10, 20, -30); // Tucked limbs
+        this.line(0, 10, 20, 30);
+    } else if (this.state === "MOVE") {
+        this.line(0, -10, walkIdx * 15, 5); // Swing arms
+        this.line(0, -10, -walkIdx * 15, 5);
+        this.line(0, 10, -walkIdx * 20, 35); // Swing legs
+        this.line(0, 10, walkIdx * 20, 35);
+    } else { // IDLE
+        this.line(0, -10, -15, 5 + breathe);
+        this.line(0, -10, 15, 5 + breathe);
+        this.line(0, 10, -10, 40);
+        this.line(0, 10, 10, 40);
+    }
+
+    ctx.restore();
+    this.projectiles.forEach(p => p.draw());
+  }
+
+  line(x1, y1, x2, y2) {
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+}
+
+// --- ENGINE ---
+let gameState = "PLAYING";
+let p1Wins = 0, p2Wins = 0, currentRound = 1;
+const keys = {};
+window.onkeydown = e => { keys[e.key] = true; if(audioCtx.state==='suspended') audioCtx.resume(); };
+window.onkeyup = e => keys[e.key] = false;
+
+const p1 = new Fighter(100, "#3af", "red", { left: 'a', right: 'd', jump: 'w', down: 's', attack: 'f', fireball: 'q', super: 'e' });
+const p2 = new Fighter(650, "#f33", "blue", { left: 'ArrowLeft', right: 'ArrowRight', jump: 'ArrowUp', down: 'ArrowDown', attack: 'Enter', fireball: 'Shift', super: '/' });
+
+function drawStage() {
+    let grad = ctx.createLinearGradient(0, 0, 0, 350);
+    grad.addColorStop(0, "#050510"); grad.addColorStop(1, "#1a1a40");
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#00ffcc"; ctx.fillRect(0, 330, canvas.width, 2);
+}
+
+function handleCollisions(atk, vic) {
+  if (atk.state === "PUNCH" && atk.stateTimer > 10) {
+    if (Math.abs(atk.x - vic.x) < 50 && Math.abs(atk.y - vic.y) < 50) {
+      vic.health -= 0.3; atk.meter += 0.5; sounds.hit();
+    }
+  }
+  atk.projectiles.forEach(p => {
+    if (p.x < vic.x + 40 && p.x + p.width > vic.x && p.y < vic.y + 80 && p.y + p.height > vic.y) {
+      vic.health -= p.isSuper ? 25 : 8;
+      vic.meter += 4; p.active = false; sounds.hit();
+    }
+  });
+}
+
+function loop() {
+  drawStage();
+  p1.move(keys); p2.move(keys);
+  p1.update(); p2.update();
+  handleCollisions(p1, p2); handleCollisions(p2, p1);
+  p1.draw(); p2.draw();
+
+  // Health Bars
+  ctx.fillStyle = "red"; ctx.fillRect(20, 20, 300, 15); ctx.fillRect(480, 20, 300, 15);
+  ctx.fillStyle = "#00ff00"; ctx.fillRect(20, 20, p1.health * 3, 15); ctx.fillRect(780, 20, -p2.health * 3, 15);
+  // Meter Bars
+  ctx.fillStyle = p1.meter >= 100 ? "white" : "#0066ff"; ctx.fillRect(20, 40, p1.meter * 2, 8);
+  ctx.fillStyle = p2.meter >= 100 ? "white" : "#0066ff"; ctx.fillRect(780, 40, -p2.meter * 2, 8);
+
+  if ((p1.health <= 0 || p2.health <= 0) && gameState === "PLAYING") {
+    gameState = "KO";
+    if(p1.health > 0) p1Wins++; else p2Wins++;
+    document.getElementById('p1-wins').innerText = `Wins: ${p1Wins}`;
+    document.getElementById('p2-wins').innerText = `Wins: ${p2Wins}`;
+    setTimeout(() => { 
+        p1.reset(); p2.reset(); 
+        gameState = "PLAYING"; 
+        currentRound++; 
+        document.getElementById('round-text').innerText = `ROUND ${currentRound}`;
+    }, 2000);
+  }
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
